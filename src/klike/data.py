@@ -14,13 +14,14 @@ def load_raw(path: Path | str = RAW_DATA_PATH) -> pd.DataFrame:
     """Lê o CSV bruto do desafio com os tipos de coluna corretos.
 
     - `date` como datetime
-    - colunas booleanas como bool
+    - colunas booleanas como "boolean" (nullable): `astype(bool)` converteria
+      `NaN` silenciosamente para `True` em colunas com nulos (ex.: `has_subtitle`)
     - colunas categóricas como category
     """
     df = pd.read_csv(path, parse_dates=["date"])
 
     for col in BOOL_COLS:
-        df[col] = df[col].astype("bool")
+        df[col] = df[col].astype("boolean")
 
     for col in CATEGORY_COLS:
         df[col] = df[col].astype("category")
