@@ -336,3 +336,45 @@ def mix_por_plataforma(df: pd.DataFrame, coluna: str, titulo: str):
     ax.set_title(titulo, fontsize=11, color=INK_PRIMARIO)
     fig.tight_layout()
     return fig
+
+
+LABELS_ATRIBUTOS_MODELO = {
+    "platform": "Plataforma",
+    "category": "Categoria do anunciante",
+    "objective": "Objetivo da campanha",
+    "target_audience_age": "Faixa etária do público",
+    "is_retargeting": "Retargeting",
+    "video_duration_s": "Duração do vídeo",
+    "format": "Formato do vídeo",
+    "has_subtitle": "Legendas",
+    "has_cta": "Call-to-action (CTA)",
+    "has_hook": "Hook nos 3 primeiros segundos",
+    "has_face": "Rosto humano no vídeo",
+    "text_density": "Quantidade de texto na tela",
+    "music_voice_ratio": "Proporção música/voz",
+}
+
+
+def feature_importance_bar(tabela_importancia: pd.DataFrame, titulo: str | None = None):
+    """Gráfico de barras horizontal da permutation importance (Parte 2), no
+    mesmo padrão visual da Parte 1. `tabela_importancia`: colunas `atributo`,
+    `importancia_media`, `importancia_dp`, já ordenada da mais para a menos
+    importante."""
+    tabela = tabela_importancia.sort_values("importancia_media", ascending=True)
+    rotulos = [LABELS_ATRIBUTOS_MODELO.get(a, a) for a in tabela["atributo"]]
+
+    if titulo is None:
+        top1 = LABELS_ATRIBUTOS_MODELO.get(tabela_importancia.iloc[0]["atributo"], tabela_importancia.iloc[0]["atributo"])
+        titulo = f"{top1} é o atributo que mais ajuda o modelo a prever o score"
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    cores = ["#2a78d6" if v > 0 else "#c3c2b7" for v in tabela["importancia_media"]]
+    ax.barh(rotulos, tabela["importancia_media"], xerr=tabela["importancia_dp"], color=cores, height=0.6, capsize=3, error_kw={"ecolor": INK_MUTED, "linewidth": 1})
+    ax.axvline(0, color=INK_MUTED, linewidth=1)
+    ax.set_xlabel("queda no R² ao embaralhar o atributo (importância)", fontsize=9, color=INK_SECUNDARIO)
+    ax.set_title(titulo, fontsize=13, color=INK_PRIMARIO, pad=15)
+    _estilo_eixo(ax)
+    ax.grid(axis="x", color=GRADE, linewidth=0.8)
+    _rodape(fig)
+    fig.tight_layout(rect=[0, 0.03, 1, 1])
+    return fig

@@ -9,3 +9,4 @@ env/
 *.egg-info/
 .pytest_cache/
 CLAUDE.md
+models/

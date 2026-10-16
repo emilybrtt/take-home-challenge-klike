@@ -27,7 +27,7 @@ Análise completa, com código, em `notebooks/01_eda.ipynb`.
 
 ### 1. Perfil e qualidade dos dados
 
-500 campanhas, 25 colunas. Como tratamos cada problema encontrado:
+500 campanhas, 26 colunas. Como tratamos cada problema encontrado:
 
 - **Valores faltantes** — 7 colunas com 5-9% de nulos cada, independentes entre si (não concentrados nas mesmas linhas). `cpc` e `revenue` foram **reconstruídos exatamente** a partir de outras colunas (cliques/gasto e ROAS/gasto). `has_subtitle`, `video_duration_s` e `music_voice_ratio` ficam para **imputação (moda/mediana) + indicador de nulo dentro do Pipeline** de modelagem — nunca antes do split, para não vazar dado. `avg_watch_time_s` e `engagement_rate` são só **excluídos no cálculo que usa aquela métrica específica** (análise de casos disponíveis).
 - **Outliers** — mantidos: são extremos legítimos (ex.: campanhas de gasto muito alto), não erro de digitação. As análises usam mediana e, quando relevante, escala log; nenhum outlier legítimo foi removido.
@@ -39,7 +39,7 @@ Análise completa, com código, em `notebooks/01_eda.ipynb`.
 
 ![Forest plot](reports/figures/forest_ctr_engajamento_score.png)
 
-Hook nos 3 primeiros segundos e rosto humano no vídeo são os atributos com o efeito mais forte e mais consistente: ambos associados a CTR, engajamento e score mais altos, de forma repetida nas 3 plataformas. Vídeo com muito texto na tela e vídeos com mais de 30 segundos aparecem do lado oposto.
+Hook nos 3 primeiros segundos e rosto humano são os atributos com o efeito mais forte: ambos associados a CTR, engajamento e score mais altos. Hook se repete nas 3 plataformas; rosto tem a evidência mais forte no TikTok.
 
 ![Score x performance](reports/figures/score_x_ctr_e_roas.png)
 
@@ -66,6 +66,45 @@ As 4 visualizações da pergunta 4 estão acima, cada uma com a pergunta que res
 Todo efeito usa a **mediana** (não a média — as métricas são bem assimétricas) e vem com uma **faixa de incerteza por bootstrap** (1000 reamostragens); só contamos um efeito como achado quando essa faixa não cruza o zero. Testamos 212 combinações de atributo x métrica x plataforma ao todo — ao acaso, ~11 delas dariam "achado" mesmo sem efeito real; encontramos 51, a maioria (44) confirmada em mais de uma métrica ou plataforma. Detalhes de cada achado, incluindo os que pareciam relevantes mas não se confirmaram: [`docs/eda_insights.md`](docs/eda_insights.md).
 
 ## Parte 2 — Modelagem
+
+Análise completa, com código, em `notebooks/02_modeling.ipynb`.
+
+### 1. Features e por quê
+
+Cenário principal: **pré-veiculação** — só atributos conhecidos ANTES de rodar a campanha (sem nenhuma métrica de performance), porque é o único uso real do modelo (prever/recomendar antes de gastar dinheiro). 13 atributos viram 27 colunas no pré-processamento: one-hot de plataforma/categoria/objetivo/faixa etária/formato; densidade de texto como ordinal (pouco/médio/muito); duração do vídeo em escala log (é assimétrica — EDA, seção 1.7); `has_subtitle`, duração e proporção música/voz com imputação + indicador de nulo, sempre aprendida só no treino (nunca antes do split/CV). Criamos `n_boas_praticas` (hook + rosto + pouco texto + vídeo curto) **dentro do Pipeline**, depois de imputar a duração — senão um vídeo sem duração informada contaria errado como "não segue a prática".
+
+**Ablação de `n_boas_praticas`:** rodamos a mesma validação cruzada do modelo escolhido com e sem essa feature (RMSE 9,13 vs. 9,14; R² 0,649 vs. 0,648) — a diferença é desprezível. Sendo honestos: para o modelo de árvores, que já capta essas interações sozinho, o resumo não melhora a previsão. Mantemos `n_boas_praticas` mesmo assim porque é útil como resumo interpretável no Recommendations Engine (Parte 3).
+
+### 2. Modelo escolhido e por quê
+
+Comparamos 4 modelos por validação cruzada (`RepeatedKFold`, 5 folds x 3 repetições) no treino:
+
+| Modelo | RMSE | MAE | R² |
+| :-- | :-- | :-- | :-- |
+| Dummy (mediana) | 15,74 ± 1,20 | 12,75 ± 0,91 | -0,03 ± 0,03 |
+| Ridge | 9,61 ± 0,54 | 7,77 ± 0,39 | 0,61 ± 0,06 |
+| Random Forest | 9,69 ± 0,44 | 7,75 ± 0,34 | 0,61 ± 0,07 |
+| **Gradient Boosting** | **9,13 ± 0,36** | **7,20 ± 0,34** | **0,65 ± 0,06** |
+
+O Gradient Boosting venceu com folga: a diferença para o Ridge (0,48) é maior que 1 desvio padrão do melhor modelo (0,36), então não se aplica a regra de preferir o Ridge por interpretabilidade. Trocamos "coeficiente em pontos" por permutation importance (seção 4).
+
+### 3. Avaliação e interpretação
+
+No conjunto de teste (usado uma única vez): o modelo erra em média **7,7 pontos** (MAE) numa escala de 0 a 100 — **37% menos** que o baseline (12,3 pontos) — e explica **59%** da variância do score (R²). Não erra sistematicamente mais em nenhuma plataforma (MAE entre 6,1 e 9,1 pontos; amostra pequena por grupo no teste).
+
+![Previsto x real](reports/figures/modelo_previsto_x_real.png)
+
+### 4. Feature importance e sentido de negócio
+
+![Feature importance](reports/figures/feature_importance_klike_score.png)
+
+Bate com a Parte 1: hook e rosto humano são os 2 atributos mais importantes para o modelo — exatamente os que tinham o efeito mais forte em CTR/engajamento na EDA. CTA e legendas aparecem em seguida (4º e 5º lugar): o modelo confirma que CTA e legendas elevam o score; a ausência de efeito em performance real vem da Parte 1.
+
+Duração do vídeo tem importância praticamente nula para o score, embora vídeos com mais de 30s estejam associados a CTR e engajamento menores (Parte 1). Ou seja, score e performance divergem nos dois sentidos: CTA e legendas sobem o score sem efeito comprovado em performance; duração afeta a performance sem afetar o score.
+
+**Cenário comparativo "com performance":** incluir as métricas reais de performance eleva o R² de validação cruzada de 65% para 80% — esperado, já que o score correlaciona com CTR/ROAS (Parte 1). Esse cenário não é otimizado nem usado no Recommendations Engine, por não refletir o uso real (prever antes de rodar a campanha).
+
+Modelo final salvo em `models/klike_model.joblib` via `train_and_save()` (`models/` está no `.gitignore` — rode a função para recriar o arquivo; a Parte 3 carrega esse Pipeline com `joblib.load`).
 
 ## Parte 3 — Recommendations Engine
 
