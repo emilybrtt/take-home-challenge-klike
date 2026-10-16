@@ -2,24 +2,91 @@
 
 ## Visão geral
 
+Pipeline completo de ciência de dados para o `klike_score` da Klike: diagnóstico e correção da qualidade dos dados, modelo preditivo pré-veiculação e um Recommendations Engine com recomendações acionáveis e quantificadas.
+
+- **Qualidade dos dados** corrigida por triangulação entre colunas correlacionadas (10 campanhas com dado bruto corrompido), não por descarte de linhas.
+- **Hook nos 3s iniciais e rosto humano** são os atributos com efeito mais forte, tanto na EDA (CTR/engajamento) quanto na importância do modelo.
+- **Score e performance real divergem nos dois sentidos**: CTA e legendas elevam o `klike_score` sem evidência de elevar performance; duração afeta performance sem afetar o score.
+- **Modelo pré-veiculação** (sem métricas de performance) erra em média **7,7 pontos** (MAE) vs. **12,3** do baseline — **37% melhor**.
+- **Recommendations Engine** quantifica cada recomendação por duas fontes (impacto no score e lift de performance), separando o que tem evidência real do que só eleva o score.
+
+Exemplo real da CLI (`KLK-0024`, Meta):
+
+```
+Score Klike previsto atual: 35.6
+
+1. Reduzir a quantidade de texto na tela de muito para médio: na Meta, criativos nessa
+   condição têm CTR mediano +91% (n=105 vs 32). O modelo estima +20 pontos no Klike Score.
+   (+3 recomendações)
+```
+
 ## Como rodar
 
 Testado com **Python 3.14**.
 
 ```bash
+# 1. clonar o repositório e entrar na pasta
+git clone <url-do-repo> && cd take-home-challenge-klike
+
+# 2. criar e ativar o ambiente virtual
 python3 -m venv .venv
 source .venv/bin/activate
+
+# 3. instalar as dependências
 pip install -r requirements.txt
-jupyter notebook
 ```
 
-Os notebooks estão em `notebooks/`, numerados na ordem em que devem ser executados:
+Depois, na ordem:
 
-- `01_eda.ipynb` — Parte 1
-- `02_modeling.ipynb` — Parte 2
-- `03_recommendations.ipynb` — Parte 3
+```bash
+# 4. rodar os notebooks, em ordem (gera data/processed/klike_clean.parquet,
+#    reports/figures/*.png e models/klike_model.joblib)
+jupyter notebook
+#   -> notebooks/01_eda.ipynb              (Parte 1)
+#   -> notebooks/02_modeling.ipynb         (Parte 2; ou só klike.model.train_and_save()
+#                                            se quiser recriar o modelo sem reabrir o notebook)
+#   -> notebooks/03_recommendations.ipynb  (Parte 3)
 
-Funções reutilizáveis ficam em `src/klike/`.
+# 5. rodar a CLI do Recommendations Engine
+PYTHONPATH=src python -m klike.cli --campaign-id KLK-0024
+PYTHONPATH=src python -m klike.cli --campaign-id KLK-0024 --json
+
+# 6. rodar os testes
+PYTHONPATH=src pytest tests/ -q
+```
+
+Funções reutilizáveis ficam em `src/klike/`; os notebooks só orquestram e explicam.
+
+### Estrutura do repositório
+
+```
+.
+├── data/
+│   ├── raw/klike_challenge_dataset.csv   # dataset original do desafio
+│   └── processed/klike_clean.parquet     # dataset limpo, gerado por load_clean() (notebook 01)
+├── docs/
+│   ├── CHALLENGE.md            # enunciado original do desafio
+│   ├── eda_qualidade.md        # detalhe dos problemas de qualidade de dados e correções (Parte 1)
+│   ├── eda_insights.md         # detalhe estatístico dos achados de atributo x performance (Parte 1)
+│   └── brainstorm-parte-1.md   # notas de exploração inicial (Parte 1)
+├── models/klike_model.joblib   # pipeline treinado, gerado por train_and_save() (não versionado)
+├── notebooks/
+│   ├── 01_eda.ipynb                  # Parte 1 — EDA
+│   ├── 02_modeling.ipynb             # Parte 2 — Modelagem
+│   └── 03_recommendations.ipynb      # Parte 3 — Recommendations Engine
+├── reports/figures/            # imagens geradas pelos notebooks, usadas neste README
+├── src/klike/
+│   ├── data.py          # load_raw(), clean(), load_clean()
+│   ├── eda.py           # funções estatísticas da Parte 1 (lift por bootstrap etc.)
+│   ├── features.py      # pré-processamento e feature engineering do Pipeline (Parte 2)
+│   ├── model.py         # treino, avaliação e train_and_save() (Parte 2)
+│   ├── recommender.py   # Recommendations Engine (Parte 3)
+│   ├── viz.py           # funções de plot reutilizadas pelos notebooks
+│   └── cli.py           # CLI do Recommendations Engine
+├── tests/test_recommender.py   # testes do Recommendations Engine (pytest)
+├── requirements.txt
+└── README.md
+```
 
 ## Parte 1 — EDA
 
@@ -108,6 +175,105 @@ Modelo final salvo em `models/klike_model.joblib` via `train_and_save()` (`model
 
 ## Parte 3 — Recommendations Engine
 
+Análise completa, com código, em `notebooks/03_recommendations.ipynb` (código em `src/klike/recommender.py` e `src/klike/cli.py`).
+
+### Como funciona
+
+Recebe uma campanha (linha do dataset) e gera recomendações só sobre atributos acionáveis (`has_hook`, `has_face`, `has_subtitle`, `has_cta`, `text_density`, `video_duration_s`, `format`, `music_voice_ratio` — nunca plataforma/categoria/objetivo). Cada recomendação é quantificada por **duas fontes**, sempre explícitas:
+
+1. **Impacto no score** — "what-if" com o modelo da Parte 2: copia a campanha, aplica a mudança, compara o score previsto antes/depois. Sempre disponível.
+2. **Impacto em performance** (CTR, engajamento, fração assistida) — lift da mediana com faixa de incerteza por bootstrap, só quando há evidência (a faixa não cruza 0). Contexto por *fallback*: `plataforma x categoria` → `plataforma` → `geral`, exigindo `n ≥ 20` nos dois grupos em cada nível. `format` e proporção música/voz **nunca** usam o nível "geral" — só recomendamos trocar de formato se houver evidência NA PLATAFORMA da campanha (por isso nunca sugerimos vertical/horizontal no TikTok, que não tem vídeos horizontais). Os cálculos de bootstrap ficam em cache.
+
+Regras para o impacto no score (o modelo é nāo-linear, o efeito varia por campanha): se for ≤ 0,5 ponto, mostramos "impacto no score: desprezível" em vez do número (é o caso esperado de `video_duration_s`, que tem importância ~0 — Parte 2); se for negativo numa ação com evidência de performance, mantemos a recomendação (a evidência justifica) mas avisamos que o modelo não estima ganho de score para aquela campanha específica; ações **sem** evidência de performance **e** com impacto no score desprezível/negativo são descartadas.
+
+**Priorização:** nível 1 = ações com evidência em performance (ordenadas pelo maior lift de CTR, ou da métrica com evidência); nível 2 = só impacto no score (ordenadas pelo maior delta). Sempre pelo menos 3 recomendações quando há ações aplicáveis; se a campanha já segue quase tudo, dizemos isso explicitamente em vez de inventar recomendação.
+
+### Como rodar
+
+```bash
+PYTHONPATH=src python -m klike.cli --campaign-id KLK-0024
+PYTHONPATH=src python -m klike.cli --campaign-id KLK-0024 --json   # saída estruturada
+```
+
+### Exemplo real (`KLK-0024`, Meta, muito texto na tela)
+
+```
+Score Klike previsto atual: 35.6
+
+1. Reduzir a quantidade de texto na tela de muito para médio: na Meta, criativos nessa condição
+   têm CTR mediano +91% (faixa de incerteza: +18% a +188%; n=105 vs 32); ... O modelo estima
+   +20 pontos no Klike Score.
+2. Incluir rosto humano no vídeo: na Meta, criativos nessa condição têm engajamento mediano +54%
+   (faixa de incerteza: +22% a +103%; n=110 vs 114); ... O modelo estima +17 pontos no Klike Score.
+3. Trocar o formato do vídeo para vertical: na Meta, criativos nessa condição têm engajamento
+   mediano +44% (faixa de incerteza: +17% a +89%; n=102 vs 63). O modelo estima +2 pontos.
+4. Adicionar um hook nos primeiros 3 segundos: ... O modelo estima +19 pontos no Klike Score.
+```
+
+### Limitações
+
+Os efeitos de performance vêm de dados **observacionais** (associação, não causalidade) — campanhas com hook podem diferir de outras formas que não medimos. O ideal é validar as recomendações de maior impacto com um teste A/B antes de aplicá-las em escala.
+
 ## Parte 4 — Visão de produto
 
+### 1. Features adicionais com acesso ao vídeo
+
+**Visual:**
+
+- **Cortes de cena por segundo (ritmo de edição)** — hoje não medimos ritmo nenhum; um vídeo "dinâmico" e um "estático" com os mesmos `has_hook`/`has_face` são indistinguíveis para o modelo.
+- **Momento exato (em segundos) do primeiro rosto** — hoje `has_face` é booleano; não sabemos se o rosto aparece no segundo 1 ou no segundo 15, o que limita a precisão da recomendação "incluir rosto" (Parte 3).
+- **Close-up / contato visual com a câmera** — proxy mais forte de conexão humana que "tem rosto ou não".
+- **Aparição de marca/produto e o segundo em que acontece** — lacuna total hoje; não existe nenhuma feature de branding visual no dataset.
+- **OCR do texto na tela** (quantidade, tamanho/legibilidade, área segura de cada plataforma) — hoje `text_density` é só low/medium/high; não sabemos se o texto é ilegível ou é cortado pela UI da plataforma (ex.: botões do TikTok sobre o vídeo).
+
+**Áudio:**
+
+- **Transcrição da fala** — se há fala nos primeiros segundos (reforça/substitui `has_hook`), presença e texto exato do CTA falado (hoje `has_cta` é booleano, sem medir se o CTA é claro ou fraco) e velocidade da fala.
+- **Energia/ritmo da música** — hoje `music_voice_ratio` só mede proporção, não se a música é energética ou calma, o que pode interagir com retenção.
+
+**Semântica:**
+
+- **Embeddings de frames e da transcrição** — similaridade com criativos de alta performance, indo além dos 8 atributos binários atuais (ex.: "esse criativo é visualmente parecido com X% dos criativos no top quintil de CTR").
+- **Modelagem de tópicos das transcrições** — identifica ângulos de copy que performam melhor, algo que os metadados atuais não capturam.
+
+**Ponto central:** hook, rosto e texto deixam de ser booleanos "sim/não" e passam a ser medidas contínuas e temporais (segundo exato, duração, intensidade). É isso que destrava recomendações mais precisas — "o primeiro rosto aparece aos 4s; antecipar para antes de 2s" em vez do atual "incluir rosto humano no vídeo".
+
+### 2. Como colocar o engine em produção
+
+```mermaid
+flowchart LR
+    A[Upload do vídeo] --> B[Fila]
+    B --> C["Workers de extração<br/>de features"]
+    C --> D[(Feature store)]
+    D --> E[API: score + recomendação]
+    E --> F[Interface do Klike]
+    F --> G[(Resultados reais<br/>da campanha)]
+    G -. re-treino periódico .-> E
+```
+
+- **Offline vs. online** — tabelas de lift (`eda.bootstrap_median_lift`) e o modelo (`model.train_and_save()`) são recalculados em batch (ex.: semanal); a API de score + recomendação é leve, sem estado, e escala horizontalmente (só lê artefatos já calculados). A parte pesada — processar vídeo, extrair features visuais/áudio com GPU — fica isolada nos workers assíncronos da fila, fora do caminho online.
+- **Versionamento** — modelo e tabelas de lift num model registry (ex.: MLflow), com `data_version`/`model_version` gravados em cada resposta da API, para reproduzir/auditar qualquer recomendação dada no passado.
+- **Qualidade de dados na entrada** — hoje `clean()` corrige dado corrompido por uma lista fixa de `campaign_id` (`IMPRESSIONS_CORROMPIDAS` etc., em `data.py`); não escala em produção. Trocar por regras automáticas (ex.: `ctr` informado divergindo de `clicks/impressions` acima de uma tolerância) que sinalizam cada vídeo novo suspeito para revisão, em vez de aceitar silenciosamente.
+- **Monitoramento** — drift das features de entrada (distribuição de `has_hook`/duração mudando mês a mês), erro do modelo conforme os scores reais chegam (MAE ao vivo vs. os 7,7 pontos do backtest) e taxa de adoção das recomendações pelo time de marketing.
+- **Experimentação** — os lifts do engine hoje são observacionais (Parte 3); teste A/B (campanhas que seguem a recomendação vs. grupo controle) é o próximo passo para trocar "associado a +91% de CTR" por um efeito causal validado.
+- **Recalibrar o score com performance** — a Parte 2 encontrou que `klike_score` e performance real divergem nos dois sentidos (CTA/legendas elevam o score sem elevar performance; duração afeta performance sem afetar o score). Com dados reais de campanhas em produção, vale re-treinar o score para fechar esse gap, em vez de tratá-lo como alvo fixo.
+
+### 3. O que faria com mais tempo
+
+1. **Inferência causal** (ajuste por confundidores / matching) — os lifts atuais (Parte 3) são diferença de mediana entre grupos observacionais; sem ajustar por confundidores (ex.: categoria, objetivo), parte do efeito pode vir de quem usa cada atributo, não do atributo em si.
+2. **Encolhimento hierárquico (bayesiano)** para grupos pequenos — o fallback rígido `plataforma x categoria` → `plataforma` → `geral` com `n ≥ 20` descarta toda a granularidade de um grupo com, digamos, `n=15`; um modelo hierárquico puxaria a estimativa de um grupo pequeno em direção à média do grupo maior, sem descartar a informação.
+3. **Recomendações combinadas** (ex.: hook + rosto juntos) **e modelos diretos de performance** (prever CTR) — hoje cada ação é avaliada isoladamente e o modelo só quantifica o score; hook+rosto juntos pode ter efeito diferente da soma dos efeitos isolados, e prever CTR diretamente permitiria quantificar ações pelo modelo, não só por lift de mediana.
+4. **Explicações por campanha com SHAP** — a Parte 2 usa permutation importance global; SHAP por campanha explicaria por que o score previsto daquela campanha específica é 35,6, não só o que importa em média.
+5. **Intervalos de incerteza na previsão do score** (regressão quantílica ou conformal) — hoje o modelo devolve um número único; saber se a previsão é 35,6±3 ou 35,6±15 muda a confiança que o time de marketing deveria ter na recomendação.
+6. **Validação temporal** (treinar nos primeiros meses, testar nos últimos) — a validação atual (CV k-fold) assume que os dados são intercambiáveis no tempo; um split temporal testaria se o modelo generaliza para campanhas futuras, não só para dados parecidos.
+7. **Interface simples (ex.: Streamlit)** — hoje o engine só roda via CLI/notebook; um time de marketing não vai rodar `python -m klike.cli` — uma interface mínima (campo de `campaign_id` → recomendações) é o que faltaria para uso real.
+
 ## Limitações
+
+- **Dataset simulado e pequeno** (500 campanhas): LinkedIn tem só n=83, bem menos que Meta (241) e TikTok (176) — estimativas de lift por plataforma em LinkedIn são as menos confiáveis do projeto.
+- **Efeitos observacionais, não causais** — tudo que é reportado como lift/correlação (Partes 1 e 3) é associação; campanhas com hook podem diferir de outras formas que não medimos.
+- Dos **51 achados com evidência** (Parte 1, 212 comparações testadas em IC95%), **~11 poderiam ser só acaso** — e não sabemos quais são.
+- As **correções de dado corrompido** (`clean()`) usam uma lista fixa de `campaign_id`, não uma regra automática — não escala para dados novos (ver Parte 4.2).
+- O modelo (Gradient Boosting) tende a **regressão à média nos extremos**: previsões para scores muito altos ou muito baixos tendem a ser mais conservadoras que o valor real.
+- O modelo aprende o **`klike_score`**, que pode não estar calibrado com a performance real (Parte 2, seção 4) — otimizar recomendações só pelo score pode não otimizar o resultado da campanha.
+- **`n_boas_praticas`** foi definido a partir do mesmo dataset usado para validar seu efeito (Parte 1) — a validação "fora da amostra" é feita na Parte 2, mas ainda é o mesmo conjunto de 500 linhas.

@@ -79,13 +79,19 @@ _BOOL_COLS_PREVEICULACAO = ["is_retargeting", "has_subtitle", "has_cta", "has_ho
 
 def montar_X_preveiculacao(df: pd.DataFrame, cenario: str = "preveiculacao") -> pd.DataFrame:
     """Seleciona as colunas do cenário pedido (`"preveiculacao"` ou `"com_performance"`)
-    e converte as colunas booleanas nullable (`boolean`) para `float64`
-    (`pd.NA` -> `np.nan`), para compatibilidade com os transformers do sklearn.
+    e converte as colunas booleanas (nullable `boolean` OU `object`, caso de um
+    DataFrame de uma única linha montado a partir de um dict/Series — ver
+    `klike.recommender._campanha_para_X`) para `float64` (nulos -> `np.nan`),
+    para compatibilidade com os transformers do sklearn. Usa `.where(notna, nan)`
+    antes do `.astype` porque um `pd.NA` "solto" num array `object` (não mais
+    dentro de uma `BooleanDtype` real) não é convertido por `.astype("float64")`
+    sozinho.
     """
     colunas = FEATURE_COLS_PREVEICULACAO + (FEATURE_COLS_PERFORMANCE if cenario == "com_performance" else [])
     X = df[colunas].copy()
     for col in _BOOL_COLS_PREVEICULACAO:
-        X[col] = df[col].astype("float64")
+        coluna = X[col]
+        X[col] = coluna.where(coluna.notna(), np.nan).astype("float64")
     return X
 
 
