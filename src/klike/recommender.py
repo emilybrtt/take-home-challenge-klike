@@ -5,11 +5,22 @@ performance da EDA (Parte 1).
 Duas fontes de quantificação, sempre explícitas (CLAUDE.md, regra e):
 - **Impacto no score**: "what-if" com o modelo salvo — sempre disponível.
 - **Impacto em performance** (ctr/engagement_rate/watch_rate): lift da mediana
-  com IC95% por bootstrap (`eda.bootstrap_median_lift`), só quando há
-  evidência (IC não cruza 0) num nível de contexto com `n >= 20` nos dois
-  grupos (fallback `platform x category` -> `platform` -> `global`, exceto
-  para `format`/`music_voice_ratio`, que exigem evidência NA PLATAFORMA —
-  sem fallback para `global`). Resultados de bootstrap ficam em cache.
+  com IC95% por bootstrap (`eda.bootstrap_median_lift`), decidido para a AÇÃO
+  como um todo (`_lift_fallback_para_acao`), não métrica a métrica: percorre
+  os níveis de contexto `platform x category` -> `platform` -> `global`
+  (exceto para `format`/`music_voice_ratio`, que exigem evidência NA
+  PLATAFORMA — sem fallback para `global`) e PARA no primeiro nível com
+  evidência (IC não cruza 0) em QUALQUER métrica, reportando só as métricas
+  com evidência NESSE nível. Sobe de nível por falta de amostra (`n < 20`)
+  em qualquer transição, mas por falta de evidência (amostra suficiente, sem
+  efeito) só sobe de `platform x category` para `platform` — nunca de
+  `platform` para `global`: se a plataforma da campanha já tem dado
+  suficiente e não mostra efeito, essa é a resposta contextual correta, e
+  importar o efeito de outras plataformas poderia contradizer um achado
+  específico da plataforma (ex.: rosto humano só tem evidência de CTR no
+  TikTok — Parte 1). O texto da recomendação diz explicitamente o nível
+  usado (ex.: "na Meta em geral, ..."). Resultados de bootstrap ficam em
+  cache.
 
 Atributos acionáveis (CLAUDE.md, regra d): `video_duration_s`, `format`,
 `has_subtitle`, `has_cta`, `has_hook`, `has_face`, `text_density`,
@@ -76,20 +87,38 @@ def _prever_score(campanha) -> float:
     return float(pipeline.predict(X)[0])
 
 
-def _lift_com_fallback(
+def _lift_fallback_para_acao(
     df: pd.DataFrame,
     acao_id: str,
     mascara_referencia: pd.Series,
     mascara_grupo: pd.Series,
-    metrica: str,
     campanha,
     permitir_global: bool = True,
-) -> dict | None:
-    """Lift bootstrap de `metrica` (grupo vs. referência), com fallback de
-    contexto `platform x category` -> `platform` -> (`global`, se
-    `permitir_global`), exigindo `n >= 20` nos dois grupos em cada nível.
-    Cacheado por (acao_id, metrica, nível, contexto). Retorna `None` se nenhum
-    nível tiver amostra suficiente."""
+) -> dict[str, dict]:
+    """Lift bootstrap das 3 métricas de performance para UMA ação, com
+    fallback de contexto `platform x category` -> `platform` -> (`global`, se
+    `permitir_global`), decidido para a ação como um todo (não métrica a
+    métrica): percorre os níveis e PARA no primeiro que tiver evidência (IC
+    não cruza 0) em QUALQUER métrica, retornando só as métricas com evidência
+    NESSE nível — nunca busca uma métrica sem evidência (ex.: CTR) em outro
+    nível depois que a ação já "resolveu" num nível mais específico.
+
+    A escalada de nível tem dois motivos possíveis, mas só um é válido entre
+    `platform` e `global`:
+    - **falta de amostra** (`n < 20` nos dois grupos, em TODAS as métricas
+      do nível) — sempre sobe, em qualquer transição;
+    - **falta de evidência** (amostra suficiente, mas nenhuma métrica com IC
+      fora de 0) — só sobe de `platform x category` para `platform` (ainda é
+      a mesma plataforma, só perde a especificidade de categoria). De
+      `platform` para `global` NUNCA sobe por esse motivo: se a plataforma
+      tem dado suficiente e não mostra efeito, essa É a resposta contextual
+      correta — misturar com outras plataformas poderia contradizer um
+      achado específico da plataforma da campanha (ex.: rosto humano só tem
+      evidência de CTR no TikTok — Parte 1 — então não se usa o CTR do
+      "geral" para justificar rosto humano na Meta).
+
+    Cacheado por (acao_id, metrica, nível, contexto). Retorna `{}` se nenhum
+    nível tiver evidência (ou amostra) para nenhuma métrica."""
     plataforma = campanha["platform"]
     categoria = campanha["category"]
 
@@ -100,23 +129,36 @@ def _lift_com_fallback(
     if permitir_global:
         niveis.append(("global", pd.Series(True, index=df.index)))
 
-    for nome_nivel, filtro in niveis:
-        valores_ref = df.loc[filtro & mascara_referencia, metrica].dropna()
-        valores_grp = df.loc[filtro & mascara_grupo, metrica].dropna()
-        if len(valores_ref) < N_MIN_FALLBACK or len(valores_grp) < N_MIN_FALLBACK:
-            continue
+    for i, (nome_nivel, filtro) in enumerate(niveis):
+        resultados_nivel = {}
+        for metrica in METRICAS_PERFORMANCE:
+            valores_ref = df.loc[filtro & mascara_referencia, metrica].dropna()
+            valores_grp = df.loc[filtro & mascara_grupo, metrica].dropna()
+            if len(valores_ref) < N_MIN_FALLBACK or len(valores_grp) < N_MIN_FALLBACK:
+                continue
 
-        chave_cache = (acao_id, metrica, nome_nivel, plataforma if nome_nivel != "global" else None, categoria if nome_nivel == "platform_x_category" else None)
-        if chave_cache not in _cache_lift:
-            _cache_lift[chave_cache] = eda.bootstrap_median_lift(
-                valores_ref.to_numpy(), valores_grp.to_numpy(), tipo_efeito="relativo"
-            )
-        resultado = dict(_cache_lift[chave_cache])
-        resultado["nivel_fallback"] = nome_nivel
-        resultado["metrica"] = metrica
-        return resultado
+            chave_cache = (acao_id, metrica, nome_nivel, plataforma if nome_nivel != "global" else None, categoria if nome_nivel == "platform_x_category" else None)
+            if chave_cache not in _cache_lift:
+                _cache_lift[chave_cache] = eda.bootstrap_median_lift(
+                    valores_ref.to_numpy(), valores_grp.to_numpy(), tipo_efeito="relativo"
+                )
+            resultado = dict(_cache_lift[chave_cache])
+            resultado["nivel_fallback"] = nome_nivel
+            resultado["metrica"] = metrica
+            resultados_nivel[metrica] = resultado
 
-    return None
+        if not resultados_nivel:
+            continue  # amostra insuficiente em TODAS as métricas deste nível -> sobe
+
+        com_evidencia = {m: r for m, r in resultados_nivel.items() if r["evidencia"]}
+        if com_evidencia:
+            return com_evidencia  # para aqui: só as métricas com evidência deste nível
+
+        proximo_nivel_e_global = i + 1 < len(niveis) and niveis[i + 1][0] == "global"
+        if proximo_nivel_e_global:
+            return {}  # amostra suficiente, sem evidência — não sobe de platform para global
+
+    return {}
 
 
 def _gerar_candidatos(campanha) -> list[dict]:
@@ -139,6 +181,8 @@ def _gerar_candidatos(campanha) -> list[dict]:
                 "valor_whatif": True,
                 "mascara_referencia": df["has_hook"] == False,  # noqa: E712
                 "mascara_grupo": df["has_hook"] == True,  # noqa: E712
+                "descricao_referencia": "sem hook",
+                "descricao_grupo": "com hook",
                 "exige_evidencia_performance": False,
             }
         )
@@ -154,6 +198,8 @@ def _gerar_candidatos(campanha) -> list[dict]:
                 "valor_whatif": True,
                 "mascara_referencia": df["has_face"] == False,  # noqa: E712
                 "mascara_grupo": df["has_face"] == True,  # noqa: E712
+                "descricao_referencia": "sem rosto humano",
+                "descricao_grupo": "com rosto humano",
                 "exige_evidencia_performance": False,
             }
         )
@@ -170,6 +216,8 @@ def _gerar_candidatos(campanha) -> list[dict]:
                 "valor_whatif": True,
                 "mascara_referencia": df["has_subtitle"] == False,  # noqa: E712
                 "mascara_grupo": df["has_subtitle"] == True,  # noqa: E712
+                "descricao_referencia": "sem legendas",
+                "descricao_grupo": "com legendas",
                 "exige_evidencia_performance": False,
             }
         )
@@ -184,6 +232,8 @@ def _gerar_candidatos(campanha) -> list[dict]:
                 "valor_whatif": True,
                 "mascara_referencia": df["has_subtitle"] == False,  # noqa: E712
                 "mascara_grupo": df["has_subtitle"] == True,  # noqa: E712
+                "descricao_referencia": "sem legendas",
+                "descricao_grupo": "com legendas",
                 "exige_evidencia_performance": False,
             }
         )
@@ -199,6 +249,8 @@ def _gerar_candidatos(campanha) -> list[dict]:
                 "valor_whatif": True,
                 "mascara_referencia": df["has_cta"] == False,  # noqa: E712
                 "mascara_grupo": df["has_cta"] == True,  # noqa: E712
+                "descricao_referencia": "sem CTA",
+                "descricao_grupo": "com CTA",
                 "exige_evidencia_performance": False,
             }
         )
@@ -215,6 +267,8 @@ def _gerar_candidatos(campanha) -> list[dict]:
                 "valor_whatif": "medium",
                 "mascara_referencia": df["text_density"] == "high",
                 "mascara_grupo": df["text_density"] == "medium",
+                "descricao_referencia": "com muito texto na tela",
+                "descricao_grupo": "com texto médio na tela",
                 "exige_evidencia_performance": False,
             }
         )
@@ -229,6 +283,8 @@ def _gerar_candidatos(campanha) -> list[dict]:
                 "valor_whatif": "low",
                 "mascara_referencia": df["text_density"] == "medium",
                 "mascara_grupo": df["text_density"] == "low",
+                "descricao_referencia": "com texto médio na tela",
+                "descricao_grupo": "com pouco texto na tela",
                 "exige_evidencia_performance": False,
             }
         )
@@ -248,6 +304,8 @@ def _gerar_candidatos(campanha) -> list[dict]:
                     "valor_whatif": float(alvo_mediana),
                     "mascara_referencia": df["video_duration_bin"] == ">30s",
                     "mascara_grupo": df["video_duration_bin"] == "15-30s",
+                    "descricao_referencia": "com vídeo de mais de 30s",
+                    "descricao_grupo": "com vídeo de 15 a 30s",
                     "exige_evidencia_performance": False,
                 }
             )
@@ -263,6 +321,8 @@ def _gerar_candidatos(campanha) -> list[dict]:
                     "valor_whatif": float(alvo_mediana),
                     "mascara_referencia": df["video_duration_bin"] == "15-30s",
                     "mascara_grupo": df["video_duration_bin"] == "<=15s",
+                    "descricao_referencia": "com vídeo de 15 a 30s",
+                    "descricao_grupo": "com vídeo de até 15s",
                     "exige_evidencia_performance": False,
                 }
             )
@@ -279,6 +339,8 @@ def _gerar_candidatos(campanha) -> list[dict]:
                 "valor_whatif": "vertical",
                 "mascara_referencia": df["format"] == formato_atual,
                 "mascara_grupo": df["format"] == "vertical",
+                "descricao_referencia": f"em formato {formato_atual}",
+                "descricao_grupo": "em formato vertical",
                 "exige_evidencia_performance": True,
                 "permitir_fallback_global": False,
             }
@@ -299,6 +361,8 @@ def _gerar_candidatos(campanha) -> list[dict]:
                 "valor_whatif": float(alvo_mediana),
                 "mascara_referencia": df["music_voice_bin"] == "mais_voz",
                 "mascara_grupo": df["music_voice_bin"] == "equilibrado",
+                "descricao_referencia": "com predominância de voz",
+                "descricao_grupo": "com proporção música/voz mais equilibrada",
                 "exige_evidencia_performance": True,
                 "permitir_fallback_global": False,
             }
@@ -326,25 +390,26 @@ def _avaliar_candidato(campanha, candidato: dict) -> dict | None:
     score_novo = _prever_score(campanha_mod)
     delta_score = score_novo - score_atual
 
-    # 2) impacto em performance (com evidência)
+    # 2) impacto em performance (com evidência) — decidido para a ação como um
+    # todo: um único nível de contexto, com todas as métricas com evidência
+    # nesse nível (ver `_lift_fallback_para_acao`)
     permitir_global = candidato.get("permitir_fallback_global", True)
-    metricas_com_evidencia = []
-    for metrica in METRICAS_PERFORMANCE:
-        resultado = _lift_com_fallback(
-            df, candidato["id"], candidato["mascara_referencia"], candidato["mascara_grupo"], metrica, campanha, permitir_global
-        )
-        if resultado is not None and resultado["evidencia"]:
-            metricas_com_evidencia.append(
-                {
-                    "metrica": metrica,
-                    "lift_pct": resultado["efeito_relatado"],
-                    "ic_baixo": resultado["ic_baixo"],
-                    "ic_alto": resultado["ic_alto"],
-                    "n_referencia": resultado["n_referencia"],
-                    "n_grupo": resultado["n_grupo"],
-                    "nivel_fallback": resultado["nivel_fallback"],
-                }
-            )
+    resultados_evidencia = _lift_fallback_para_acao(
+        df, candidato["id"], candidato["mascara_referencia"], candidato["mascara_grupo"], campanha, permitir_global
+    )
+    metricas_com_evidencia = [
+        {
+            "metrica": metrica,
+            "lift_pct": resultados_evidencia[metrica]["efeito_relatado"],
+            "ic_baixo": resultados_evidencia[metrica]["ic_baixo"],
+            "ic_alto": resultados_evidencia[metrica]["ic_alto"],
+            "n_referencia": resultados_evidencia[metrica]["n_referencia"],
+            "n_grupo": resultados_evidencia[metrica]["n_grupo"],
+            "nivel_fallback": resultados_evidencia[metrica]["nivel_fallback"],
+        }
+        for metrica in METRICAS_PERFORMANCE
+        if metrica in resultados_evidencia
+    ]
 
     if candidato["exige_evidencia_performance"] and not metricas_com_evidencia:
         return None  # format/música-voz: nunca recomendar sem evidência na plataforma
@@ -360,25 +425,34 @@ def _avaliar_candidato(campanha, candidato: dict) -> dict | None:
     else:
         texto_score = f"O modelo estima {delta_score:+.0f} pontos no Klike Score."
 
-    # texto do impacto em performance
-    partes_performance = []
-    for m in metricas_com_evidencia:
-        nome_nivel = {"platform_x_category": "nesta plataforma e categoria", "platform": f"na {campanha['platform']}", "global": "no geral"}[m["nivel_fallback"]]
-        partes_performance.append(
-            f"{nome_nivel}, criativos nessa condição têm {_texto_metrica(m['metrica'])} mediano {_formatar_percentual(m['lift_pct'])} "
-            f"(faixa de incerteza: {_formatar_percentual(m['ic_baixo'])} a {_formatar_percentual(m['ic_alto'])}; n={m['n_grupo']} vs {m['n_referencia']})"
-        )
-
-    if partes_performance:
-        texto = f"{candidato['texto_acao']}: " + "; ".join(partes_performance) + ". " + texto_score
+    # texto do impacto em performance — todas as métricas com evidência vêm do
+    # MESMO nível de contexto (ver `_lift_fallback_para_acao`), então o nível
+    # é dito uma única vez, não repetido por métrica
+    if metricas_com_evidencia:
+        nome_nivel = {
+            "platform_x_category": "nesta plataforma e categoria",
+            "platform": f"na {campanha['platform']} em geral",
+            "global": "no geral",
+        }[metricas_com_evidencia[0]["nivel_fallback"]]
+        clausulas_metricas = []
+        for m in metricas_com_evidencia:
+            comparativo = "maior" if m["lift_pct"] >= 0 else "menor"
+            clausulas_metricas.append(
+                f"{_texto_metrica(m['metrica'])} mediano {abs(m['lift_pct']):.0f}% {comparativo} que os {candidato['descricao_referencia']} "
+                f"(faixa de incerteza: {_formatar_percentual(m['ic_baixo'])} a {_formatar_percentual(m['ic_alto'])}; n={m['n_grupo']} vs {m['n_referencia']})"
+            )
+        texto_performance = f"{nome_nivel}, criativos {candidato['descricao_grupo']} têm " + "; ".join(clausulas_metricas)
+        texto = f"{candidato['texto_acao']}: {texto_performance}. " + texto_score
     else:
         texto = f"{candidato['texto_acao']}: sem evidência de impacto em performance nos dados; impacto estimado apenas no score. " + texto_score
 
     nivel_prioridade = 1 if metricas_com_evidencia else 2
     if metricas_com_evidencia:
         lifts_evidencia = {m["metrica"]: m["lift_pct"] for m in metricas_com_evidencia}
-        ordenacao = lifts_evidencia.get("ctr", max(lifts_evidencia.values()))
+        tem_ctr = "ctr" in lifts_evidencia
+        ordenacao = lifts_evidencia["ctr"] if tem_ctr else max(lifts_evidencia.values())
     else:
+        tem_ctr = False
         ordenacao = delta_score
 
     return {
@@ -390,6 +464,7 @@ def _avaliar_candidato(campanha, candidato: dict) -> dict | None:
         "metricas_com_evidencia": metricas_com_evidencia,
         "nivel_prioridade": nivel_prioridade,
         "texto": texto,
+        "_tem_ctr": tem_ctr,
         "_ordenacao": ordenacao,
     }
 
@@ -419,9 +494,10 @@ def recomendar(campanha, n_min: int = 3) -> list[dict]:
     candidatos = _gerar_candidatos(campanha)
     avaliados = [r for c in candidatos if (r := _avaliar_candidato(campanha, c)) is not None]
 
-    avaliados.sort(key=lambda r: (r["nivel_prioridade"], -r["_ordenacao"]))
+    avaliados.sort(key=lambda r: (r["nivel_prioridade"], 0 if r["_tem_ctr"] else 1, -r["_ordenacao"]))
     for r in avaliados:
         del r["_ordenacao"]
+        del r["_tem_ctr"]
 
     if not avaliados:
         return [

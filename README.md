@@ -15,8 +15,9 @@ Exemplo real da CLI (`KLK-0024`, Meta):
 ```
 Score Klike previsto atual: 35.6
 
-1. Reduzir a quantidade de texto na tela de muito para médio: na Meta, criativos nessa
-   condição têm CTR mediano +91% (n=105 vs 32). O modelo estima +20 pontos no Klike Score.
+1. Reduzir a quantidade de texto na tela de muito para médio: na Meta em geral, criativos com
+   texto médio na tela têm CTR mediano 91% maior que os com muito texto na tela (n=105 vs 32).
+   O modelo estima +20 pontos no Klike Score.
    (+3 recomendações)
 ```
 
@@ -116,7 +117,7 @@ O score da Klike acompanha o resultado real: campanhas no quintil de score mais 
 
 ![Checklist do criativo](reports/figures/checklist_criativo_ctr.png)
 
-Juntando as práticas com evidência em performance real (hook, rosto humano, pouco texto, vídeo curto) num único "placar": quanto mais boas práticas, maior o CTR mediano. **Ressalva:** essas 4 práticas foram escolhidas a partir desta mesma análise, o que favorece o resultado; a validação em dados não vistos é feita na Parte 2.
+Juntando as práticas com evidência em performance real (hook, rosto humano, pouco texto, vídeo curto) num único "placar": quanto mais boas práticas, maior o CTR mediano. **Ressalva:** essas 4 práticas foram escolhidas a partir desta mesma análise, o que favorece o resultado; na Parte 2, a feature foi testada fora da amostra para prever o score e não trouxe ganho (ver ablação); a associação com CTR não foi validada fora da amostra.
 
 ### 3. Diferenças entre plataformas
 
@@ -182,11 +183,11 @@ Análise completa, com código, em `notebooks/03_recommendations.ipynb` (código
 Recebe uma campanha (linha do dataset) e gera recomendações só sobre atributos acionáveis (`has_hook`, `has_face`, `has_subtitle`, `has_cta`, `text_density`, `video_duration_s`, `format`, `music_voice_ratio` — nunca plataforma/categoria/objetivo). Cada recomendação é quantificada por **duas fontes**, sempre explícitas:
 
 1. **Impacto no score** — "what-if" com o modelo da Parte 2: copia a campanha, aplica a mudança, compara o score previsto antes/depois. Sempre disponível.
-2. **Impacto em performance** (CTR, engajamento, fração assistida) — lift da mediana com faixa de incerteza por bootstrap, só quando há evidência (a faixa não cruza 0). Contexto por *fallback*: `plataforma x categoria` → `plataforma` → `geral`, exigindo `n ≥ 20` nos dois grupos em cada nível. `format` e proporção música/voz **nunca** usam o nível "geral" — só recomendamos trocar de formato se houver evidência NA PLATAFORMA da campanha (por isso nunca sugerimos vertical/horizontal no TikTok, que não tem vídeos horizontais). Os cálculos de bootstrap ficam em cache.
+2. **Impacto em performance** (CTR, engajamento, fração assistida) — lift da mediana com faixa de incerteza por bootstrap, decidido para a **ação como um todo** (não métrica a métrica): percorremos os níveis de contexto `plataforma x categoria` → `plataforma` → `geral` e **paramos no primeiro nível que tiver evidência (IC não cruza 0) em QUALQUER métrica**, reportando só as métricas com evidência NESSE nível — nunca buscamos uma métrica sem evidência (ex.: CTR) em outro nível depois que a ação já "resolveu" num nível mais específico. A subida de nível tem dois motivos, mas só um vale entre `plataforma` e `geral`: falta de amostra (`n < 20` nos dois grupos, em todas as métricas do nível) sempre sobe; falta de evidência (amostra suficiente, sem efeito) só sobe de `plataforma x categoria` para `plataforma` — **nunca** de `plataforma` para `geral`. Isso porque **o nível "geral" é usado só por falta de amostra; quando a plataforma tem dados suficientes e não mostra efeito, essa é a resposta contextual, e não importamos o efeito de outras plataformas**. `format` e proporção música/voz nunca chegam ao nível "geral" — só recomendamos trocar de formato se houver evidência NA PLATAFORMA da campanha (por isso nunca sugerimos vertical/horizontal no TikTok, que não tem vídeos horizontais). O texto da recomendação diz explicitamente o nível usado (ex.: "na Meta em geral, ..."). Os cálculos de bootstrap ficam em cache.
 
-Regras para o impacto no score (o modelo é nāo-linear, o efeito varia por campanha): se for ≤ 0,5 ponto, mostramos "impacto no score: desprezível" em vez do número (é o caso esperado de `video_duration_s`, que tem importância ~0 — Parte 2); se for negativo numa ação com evidência de performance, mantemos a recomendação (a evidência justifica) mas avisamos que o modelo não estima ganho de score para aquela campanha específica; ações **sem** evidência de performance **e** com impacto no score desprezível/negativo são descartadas.
+Regras para o impacto no score (o modelo é não linear, o efeito varia por campanha): se for ≤ 0,5 ponto, mostramos "impacto no score: desprezível" em vez do número (é o caso esperado de `video_duration_s`, que tem importância ~0 — Parte 2); se for negativo numa ação com evidência de performance, mantemos a recomendação (a evidência justifica) mas avisamos que o modelo não estima ganho de score para aquela campanha específica; ações **sem** evidência de performance **e** com impacto no score desprezível/negativo são descartadas.
 
-**Priorização:** nível 1 = ações com evidência em performance (ordenadas pelo maior lift de CTR, ou da métrica com evidência); nível 2 = só impacto no score (ordenadas pelo maior delta). Sempre pelo menos 3 recomendações quando há ações aplicáveis; se a campanha já segue quase tudo, dizemos isso explicitamente em vez de inventar recomendação.
+**Priorização:** nível 1 = ações com evidência em performance, ordenadas primeiro pela presença de evidência em CTR (pelo maior lift de CTR) e, só depois, pelas ações com evidência apenas em outras métricas (pelo maior lift dessa métrica); nível 2 = só impacto no score (ordenadas pelo maior delta). Sempre pelo menos 3 recomendações quando há ações aplicáveis; se a campanha já segue quase tudo, dizemos isso explicitamente em vez de inventar recomendação.
 
 ### Como rodar
 
@@ -200,14 +201,23 @@ PYTHONPATH=src python -m klike.cli --campaign-id KLK-0024 --json   # saída estr
 ```
 Score Klike previsto atual: 35.6
 
-1. Reduzir a quantidade de texto na tela de muito para médio: na Meta, criativos nessa condição
-   têm CTR mediano +91% (faixa de incerteza: +18% a +188%; n=105 vs 32); ... O modelo estima
+1. Reduzir a quantidade de texto na tela de muito para médio: na Meta em geral, criativos com
+   texto médio na tela têm CTR mediano 91% maior que os com muito texto na tela (faixa de
+   incerteza: +18% a +188%; n=105 vs 32); fração assistida do vídeo mediano 26% maior que os
+   com muito texto na tela (faixa de incerteza: +0% a +86%; n=90 vs 30). O modelo estima
    +20 pontos no Klike Score.
-2. Incluir rosto humano no vídeo: na Meta, criativos nessa condição têm engajamento mediano +54%
-   (faixa de incerteza: +22% a +103%; n=110 vs 114); ... O modelo estima +17 pontos no Klike Score.
-3. Trocar o formato do vídeo para vertical: na Meta, criativos nessa condição têm engajamento
-   mediano +44% (faixa de incerteza: +17% a +89%; n=102 vs 63). O modelo estima +2 pontos.
-4. Adicionar um hook nos primeiros 3 segundos: ... O modelo estima +19 pontos no Klike Score.
+2. Adicionar um hook nos primeiros 3 segundos: na Meta em geral, criativos com hook têm CTR
+   mediano 57% maior que os sem hook (faixa de incerteza: +17% a +85%; n=128 vs 113);
+   engajamento mediano 43% maior que os sem hook (faixa de incerteza: +10% a +95%; n=122
+   vs 102); fração assistida do vídeo mediano 34% maior que os sem hook (faixa de incerteza:
+   +15% a +56%; n=112 vs 101). O modelo estima +19 pontos no Klike Score.
+3. Incluir rosto humano no vídeo: na Meta em geral, criativos com rosto humano têm engajamento
+   mediano 54% maior que os sem rosto humano (faixa de incerteza: +22% a +103%; n=110 vs 114);
+   fração assistida do vídeo mediano 29% maior que os sem rosto humano (faixa de incerteza:
+   +10% a +44%; n=108 vs 105). O modelo estima +17 pontos no Klike Score.
+4. Trocar o formato do vídeo para vertical: na Meta em geral, criativos em formato vertical
+   têm engajamento mediano 44% maior que os em formato horizontal (faixa de incerteza: +17% a
+   +89%; n=102 vs 63). O modelo estima +2 pontos no Klike Score.
 ```
 
 ### Limitações
@@ -253,7 +263,7 @@ flowchart LR
 
 - **Offline vs. online** — tabelas de lift (`eda.bootstrap_median_lift`) e o modelo (`model.train_and_save()`) são recalculados em batch (ex.: semanal); a API de score + recomendação é leve, sem estado, e escala horizontalmente (só lê artefatos já calculados). A parte pesada — processar vídeo, extrair features visuais/áudio com GPU — fica isolada nos workers assíncronos da fila, fora do caminho online.
 - **Versionamento** — modelo e tabelas de lift num model registry (ex.: MLflow), com `data_version`/`model_version` gravados em cada resposta da API, para reproduzir/auditar qualquer recomendação dada no passado.
-- **Qualidade de dados na entrada** — hoje `clean()` corrige dado corrompido por uma lista fixa de `campaign_id` (`IMPRESSIONS_CORROMPIDAS` etc., em `data.py`); não escala em produção. Trocar por regras automáticas (ex.: `ctr` informado divergindo de `clicks/impressions` acima de uma tolerância) que sinalizam cada vídeo novo suspeito para revisão, em vez de aceitar silenciosamente.
+- **Qualidade de dados na entrada** — hoje `clean()` corrige dado corrompido por uma lista fixa de `campaign_id` (`IMPRESSIONS_CORROMPIDAS` etc., em `data.py`); não escala em produção. Trocar por regras automáticas (ex.: `ctr` informado divergindo de `clicks/impressions` acima de uma tolerância) que sinalizam cada campanha nova suspeita para revisão, em vez de aceitar silenciosamente.
 - **Monitoramento** — drift das features de entrada (distribuição de `has_hook`/duração mudando mês a mês), erro do modelo conforme os scores reais chegam (MAE ao vivo vs. os 7,7 pontos do backtest) e taxa de adoção das recomendações pelo time de marketing.
 - **Experimentação** — os lifts do engine hoje são observacionais (Parte 3); teste A/B (campanhas que seguem a recomendação vs. grupo controle) é o próximo passo para trocar "associado a +91% de CTR" por um efeito causal validado.
 - **Recalibrar o score com performance** — a Parte 2 encontrou que `klike_score` e performance real divergem nos dois sentidos (CTA/legendas elevam o score sem elevar performance; duração afeta performance sem afetar o score). Com dados reais de campanhas em produção, vale re-treinar o score para fechar esse gap, em vez de tratá-lo como alvo fixo.
@@ -276,4 +286,4 @@ flowchart LR
 - As **correções de dado corrompido** (`clean()`) usam uma lista fixa de `campaign_id`, não uma regra automática — não escala para dados novos (ver Parte 4.2).
 - O modelo (Gradient Boosting) tende a **regressão à média nos extremos**: previsões para scores muito altos ou muito baixos tendem a ser mais conservadoras que o valor real.
 - O modelo aprende o **`klike_score`**, que pode não estar calibrado com a performance real (Parte 2, seção 4) — otimizar recomendações só pelo score pode não otimizar o resultado da campanha.
-- **`n_boas_praticas`** foi definido a partir do mesmo dataset usado para validar seu efeito (Parte 1) — a validação "fora da amostra" é feita na Parte 2, mas ainda é o mesmo conjunto de 500 linhas.
+- **`n_boas_praticas`** foi definido a partir do mesmo dataset usado para validar seu efeito (Parte 1) — na Parte 2, a feature foi testada fora da amostra para prever o score e não trouxe ganho (ver ablação); a associação com CTR não foi validada fora da amostra.
