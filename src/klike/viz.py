@@ -37,15 +37,20 @@ RUBRICA_LABELS = {
     ("has_face", True): "Rosto humano no vídeo",
     ("has_cta", True): "Call-to-action (CTA)",
     ("has_subtitle", True): "Legendas",
-    ("text_density", "medium"): "Texto médio na tela",
-    ("text_density", "high"): "Muito texto na tela",
-    ("format", "horizontal"): "Formato horizontal",
-    ("format", "quadrado"): "Formato quadrado",
-    ("video_duration_bin", ">30s"): "Vídeo com mais de 30s",
-    ("video_duration_bin", "15-30s"): "Vídeo de 15 a 30s",
-    ("music_voice_bin", "equilibrado"): "Música e voz equilibradas",
-    ("music_voice_bin", "mais_musica"): "Predomínio de música",
+    ("text_density", "medium"): "Texto médio na tela (vs. pouco)",
+    ("text_density", "high"): "Muito texto na tela (vs. pouco)",
+    ("format", "horizontal"): "Formato horizontal (vs. vertical)",
+    ("format", "quadrado"): "Formato quadrado (vs. vertical)",
+    ("video_duration_bin", ">30s"): "Vídeo com mais de 30s (vs. até 15s)",
+    ("video_duration_bin", "15-30s"): "Vídeo de 15 a 30s (vs. até 15s)",
+    ("music_voice_bin", "equilibrado"): "Música e voz equilibradas (vs. mais voz)",
+    ("music_voice_bin", "mais_musica"): "Predomínio de música (vs. mais voz)",
 }
+
+
+def _pt(texto_formatado: str) -> str:
+    """Troca o separador decimal de ponto para vírgula (pt-BR): '3.9x' -> '3,9x'."""
+    return texto_formatado.replace(".", ",")
 
 
 def _rodape(fig):
@@ -84,7 +89,7 @@ def forest_plot_ctr_engajamento_score(tabela_geral: pd.DataFrame, achados_classi
     fig, axes = plt.subplots(1, 3, figsize=(13, 6), sharey=True)
     titulos = {
         "ctr": "CTR — cliques por impressão",
-        "engagement_rate": "Engajamento — curtidas/comentários/compartilhamentos",
+        "engagement_rate": "Engajamento",
         "klike_score": "Score Klike (pontos)",
     }
 
@@ -214,9 +219,13 @@ def heatmap_ctr_plataforma(tabela_plataforma_ctr: pd.DataFrame, n_minimo: int = 
     ]
     ax.legend(handles=legenda, loc="upper center", bbox_to_anchor=(0.5, -0.06), ncol=1, frameon=False, fontsize=9)
 
-    fig.suptitle("O que funciona para CTR muda pouco entre plataformas — menos no formato do vídeo", fontsize=13, y=0.98, color=INK_PRIMARIO)
+    fig.suptitle("Hook é o único atributo associado a CTR maior nas 3 plataformas", fontsize=13, y=1.04, color=INK_PRIMARIO)
+    fig.text(
+        0.5, 0.995, "Rosto humano tem evidência só no TikTok; muito texto e vídeo longo, só no Meta",
+        ha="center", fontsize=10, color=INK_SECUNDARIO,
+    )
     _rodape(fig)
-    fig.tight_layout(rect=[0, 0.08, 1, 0.95])
+    fig.tight_layout(rect=[0, 0.08, 1, 0.9])
     return fig
 
 
@@ -245,7 +254,7 @@ def score_x_performance(df: pd.DataFrame, df_roas: pd.DataFrame, n_quintis: int 
         barras = ax.bar(dados.index, dados["mediana"], color=cores, zorder=2, width=0.65)
         for barra, (_, linha) in zip(barras, dados.iterrows()):
             ax.annotate(
-                fmt.format(linha["mediana"]), (barra.get_x() + barra.get_width() / 2, barra.get_height()),
+                _pt(fmt.format(linha["mediana"])), (barra.get_x() + barra.get_width() / 2, barra.get_height()),
                 xytext=(0, 4), textcoords="offset points", ha="center", fontsize=10, color=INK_PRIMARIO, fontweight="bold",
             )
             ax.annotate(
@@ -258,7 +267,7 @@ def score_x_performance(df: pd.DataFrame, df_roas: pd.DataFrame, n_quintis: int 
         ax.tick_params(axis="x", labelsize=9, colors=INK_PRIMARIO)
         ax.grid(False)
 
-    fig.suptitle(f"Campanhas com score mais alto têm CTR {razao:.1f}x maior", fontsize=14, y=1.02, color=INK_PRIMARIO)
+    fig.suptitle(f"Campanhas com score mais alto têm CTR {_pt(f'{razao:.1f}')}x maior", fontsize=14, y=1.02, color=INK_PRIMARIO)
     _rodape(fig)
     fig.tight_layout(rect=[0, 0.03, 1, 1])
     return fig
@@ -279,25 +288,28 @@ def checklist_criativo(resumo_faixas: pd.DataFrame):
         ax.plot([xi, xi], [linha["ic_baixo"], linha["ic_alto"]], color=cor, linewidth=3, zorder=2, solid_capstyle="round")
         ax.scatter([xi], [linha["mediana"]], s=90, color=cor, zorder=3, edgecolor="white", linewidth=1)
         ax.annotate(
-            f"{linha['mediana']:.1%}", (xi, linha["ic_alto"]), xytext=(0, 8), textcoords="offset points",
-            ha="center", fontsize=10, color=INK_PRIMARIO, fontweight="bold",
+            _pt(f"{linha['mediana']:.1%}"), (xi, linha["mediana"]), xytext=(12, 0), textcoords="offset points",
+            ha="left", va="center", fontsize=10, color=INK_PRIMARIO, fontweight="bold",
         )
         ax.annotate(
-            f"n={int(linha['n'])}", (xi, linha["ic_baixo"]), xytext=(0, -14), textcoords="offset points",
-            ha="center", fontsize=8, color=INK_MUTED,
+            f"n={int(linha['n'])}", xy=(xi, 0), xycoords=("data", "axes fraction"), xytext=(0, -32),
+            textcoords="offset points", ha="center", va="top", fontsize=8, color=INK_MUTED, clip_on=False,
         )
 
     ax.set_xticks(x)
     ax.set_xticklabels(resumo_faixas["faixa"], fontsize=10, color=INK_PRIMARIO)
-    ax.set_xlabel("nº de boas práticas presentes no criativo", fontsize=9, color=INK_SECUNDARIO)
+    ax.set_xlabel("nº de boas práticas presentes no criativo", fontsize=9, color=INK_SECUNDARIO, labelpad=28)
     ax.set_ylabel("")
     ax.set_yticks([])
     _estilo_eixo(ax)
     ax.grid(False)
-    ax.set_xlim(-0.5, len(resumo_faixas) - 0.5)
+    ax.set_xlim(-0.5, len(resumo_faixas) - 0.3)
 
     razao = resumo_faixas["mediana"].iloc[-1] / resumo_faixas["mediana"].iloc[0]
-    fig.suptitle(f"Criativos com todas as boas práticas têm CTR {razao:.1f}x maior que os sem nenhuma", fontsize=13, y=1.0, color=INK_PRIMARIO)
+    fig.suptitle(
+        f"Criativos com as 4 boas práticas têm CTR {_pt(f'{razao:.1f}')}x maior que os com no máximo uma",
+        fontsize=13, y=1.0, color=INK_PRIMARIO,
+    )
     ax.set_title("Boas práticas: hook, rosto humano, pouco texto na tela, vídeo de até 30s", fontsize=9, color=INK_SECUNDARIO, pad=28)
     _rodape(fig)
     fig.tight_layout(rect=[0, 0.03, 1, 1])
